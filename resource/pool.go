@@ -1,4 +1,4 @@
-package pool
+package resource
 
 import (
 	"bytes"

@@ -1,4 +1,4 @@
-package pool
+package resource
 
 import (
 	"github.com/stretchr/testify/assert"
@@ -11,7 +11,7 @@ const sourcePath = "source.dat"
 const poolPath = "pool.dat"
 
 func TestMain(m *testing.M) {
-	createSource()
+	setup()
 	code := m.Run()
 	cleanUp()
 	os.Exit(code)
@@ -22,7 +22,7 @@ func cleanUp() {
 	_ = os.Remove(poolPath)
 }
 
-func createSource() {
+func setup() {
 	var err error
 	var data = make([]byte, poolLength) // 0x00, 0x01, 0x02, 0x03... 0xFF
 
