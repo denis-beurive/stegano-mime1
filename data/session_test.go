@@ -6,24 +6,7 @@ import (
 	"testing"
 )
 
-const sessionFile = "session.data"
-
-func TestMain(m *testing.M) {
-	setup()
-	code := m.Run()
-	cleanUp()
-	os.Exit(code)
-}
-
-func cleanUp() {
-	_ = os.Remove(sessionFile)
-}
-
-func setup() {
-
-}
-
-func TestLoad(t *testing.T) {
+func TestSessionLoad(t *testing.T) {
 	var err error
 	var session Session
 	var jsonText = `{"email-index":0,"boundaries":[[1,2],[3,4]]}`
@@ -40,11 +23,11 @@ func TestLoad(t *testing.T) {
 	assert.Len(t, session.Boundaries, 2)
 	assert.Len(t, session.Boundaries[0], 2)
 	assert.Len(t, session.Boundaries[1], 2)
-	assert.Equal(t, []int{1, 2}, session.Boundaries[0])
-	assert.Equal(t, []int{3, 4}, session.Boundaries[1])
+	assert.Equal(t, []uint8{1, 2}, session.Boundaries[0])
+	assert.Equal(t, []uint8{3, 4}, session.Boundaries[1])
 }
 
-func TestSave(t *testing.T) {
+func TestSessionSave(t *testing.T) {
 	var err error
 	var session = Session{EmailIndex: 0, Boundaries: [][]uint8{{0x01, 0x02}, {0x03, 0x04}}}
 	var expected = `{"email-index":0,"boundaries":[[1,2],[3,4]]}`

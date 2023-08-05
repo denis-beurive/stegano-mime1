@@ -6,35 +6,7 @@ import (
 	"testing"
 )
 
-const poolLength = 256
-const sourcePath = "source.dat"
-const poolPath = "pool.dat"
-
-func TestMain(m *testing.M) {
-	setup()
-	code := m.Run()
-	cleanUp()
-	os.Exit(code)
-}
-
-func cleanUp() {
-	_ = os.Remove(sourcePath)
-	_ = os.Remove(poolPath)
-}
-
-func setup() {
-	var err error
-	var data = make([]byte, poolLength) // 0x00, 0x01, 0x02, 0x03... 0xFF
-
-	for i := 0; i < poolLength; i++ {
-		data[i] = byte(i)
-	}
-	if err = os.WriteFile(sourcePath, data, 0644); err != nil {
-		panic(err)
-	}
-}
-
-func TestCreate(t *testing.T) {
+func TestPoolCreate(t *testing.T) {
 	const poolLength = 256
 	const sourcePath = "source.dat"
 	const poolPath = "pool.dat"
@@ -63,7 +35,7 @@ func TestCreate(t *testing.T) {
 	}
 }
 
-func TestOpen(t *testing.T) {
+func TestPoolOpen(t *testing.T) {
 	var err error
 	var p *Pool
 	var content []byte
@@ -85,7 +57,7 @@ func TestOpen(t *testing.T) {
 	}
 }
 
-func TestGetBytes(t *testing.T) {
+func TestPoolGetBytes(t *testing.T) {
 	const sliceLength = 2
 	var err error
 	var p *Pool
