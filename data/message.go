@@ -43,3 +43,7 @@ func (m *Message) Load(filePath string, chunkSize int) error {
 	}
 	return nil
 }
+
+func (m *Message) BoundariesCount() int {
+	return len(*m)
+}

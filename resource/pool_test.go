@@ -7,17 +7,14 @@ import (
 )
 
 func TestPoolCreate(t *testing.T) {
-	const poolLength = 256
-	const sourcePath = "source.dat"
-	const poolPath = "pool.dat"
 	var err error
 	var info os.FileInfo
 	var content []byte
 	var p *Pool
 
-	p, err = Create(poolPath, sourcePath)
+	p, err = PoolCreate(poolPath, sourcePath)
 	assert.Nil(t, err)
-	defer p.Close()
+	defer p.PoolClose()
 
 	// Check the length of the file.
 	info, err = os.Stat(poolPath)
@@ -40,14 +37,14 @@ func TestPoolOpen(t *testing.T) {
 	var p *Pool
 	var content []byte
 
-	// Create a pool.
-	p, err = Create(poolPath, sourcePath)
+	// PoolCreate a pool.
+	p, err = PoolCreate(poolPath, sourcePath)
 	assert.Nil(t, err)
-	p.Close()
+	p.PoolClose()
 
-	p, err = Open(poolPath)
+	p, err = PoolOpen(poolPath)
 	assert.Nil(t, err)
-	defer p.Close()
+	defer p.PoolClose()
 
 	// Make sure that the position pointer is well set (the position should be 0).
 	content, err = os.ReadFile(poolPath)
@@ -62,20 +59,19 @@ func TestPoolGetBytes(t *testing.T) {
 	var err error
 	var p *Pool
 	var content *[]byte
-	//var pos *int64
 
-	// Create a pool.
-	p, err = Create(poolPath, sourcePath)
+	// PoolCreate a pool.
+	p, err = PoolCreate(poolPath, sourcePath)
 	assert.Nil(t, err)
-	p.Close()
+	p.PoolClose()
 
-	p, err = Open(poolPath)
+	p, err = PoolOpen(poolPath)
 	assert.Nil(t, err)
-	defer p.Close()
+	defer p.PoolClose()
 
 	// Consume all the pool two bytes at a time.
 	for i := 0; i < poolLength/sliceLength; i++ {
-		content, err = p.GetBytes(sliceLength)
+		content, err = p.PoolGetBytes(sliceLength)
 		assert.Nil(t, err)
 		assert.Equal(t, sliceLength, len(*content))
 		assert.Equal(t, uint8(2*i), (*content)[0])
@@ -83,6 +79,35 @@ func TestPoolGetBytes(t *testing.T) {
 	}
 
 	// We'll get an error...
-	content, err = p.GetBytes(sliceLength)
+	_, err = p.PoolGetBytes(sliceLength)
+	assert.NotNil(t, err)
+}
+
+func TestPoolGetBytesAsChunks(t *testing.T) {
+	const sliceLength = 2
+	var err error
+	var p *Pool
+	var chunks *[][]byte
+
+	// PoolCreate a pool.
+	p, err = PoolCreate(poolPath, sourcePath)
+	assert.Nil(t, err)
+	p.PoolClose()
+
+	p, err = PoolOpen(poolPath)
+	assert.Nil(t, err)
+	defer p.PoolClose()
+
+	chunks, err = p.PoolGetBytesAsChunks(poolLength/sliceLength, sliceLength)
+	assert.Nil(t, err)
+	assert.Equal(t, poolLength/sliceLength, len(*chunks))
+	for i := 0; i < poolLength/sliceLength; i++ {
+		assert.Len(t, (*chunks)[i], 2)
+		assert.Equal(t, byte(i*sliceLength), (*chunks)[i][0])
+		assert.Equal(t, byte(i*sliceLength+1), (*chunks)[i][1])
+	}
+
+	// We'll get an error...
+	_, err = p.PoolGetBytes(sliceLength)
 	assert.NotNil(t, err)
 }

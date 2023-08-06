@@ -34,9 +34,13 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 	return []byte(jsonResult), nil
 }
 
-func (s *Session) init() {
+func (s *Session) Init() {
 	s.EmailIndex = 0
 	s.Boundaries = make([][]uint8, 0)
+}
+
+func (s *Session) AddBoundary(boundary []byte) {
+	s.Boundaries = append(s.Boundaries, boundary)
 }
 
 func (s *Session) Load(path string) error {

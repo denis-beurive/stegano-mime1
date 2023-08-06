@@ -16,8 +16,8 @@ type Pool struct {
 	position int64
 }
 
-// Open Opens an existing pool identified by its path.
-func Open(filePath string) (*Pool, error) {
+// PoolOpen Opens an existing pool identified by its path.
+func PoolOpen(filePath string) (*Pool, error) {
 	var err error
 	var fd *os.File
 	var p Pool
@@ -39,8 +39,8 @@ func Open(filePath string) (*Pool, error) {
 	return &Pool{path: filePath, fd: fd, position: *position}, nil
 }
 
-// Create Creates a new pool from the content of a file.
-func Create(poolPath string, filePath string) (*Pool, error) {
+// PoolCreate Creates a new pool from the content of a file.
+func PoolCreate(poolPath string, filePath string) (*Pool, error) {
 	const bufferLength = 1024
 	var err error
 	var fdFile *os.File
@@ -78,7 +78,7 @@ func Create(poolPath string, filePath string) (*Pool, error) {
 		}
 	}
 
-	// Create the new pool.
+	// PoolCreate the new pool.
 	pool := Pool{path: poolPath, fd: fdPool, position: 0}
 	if err = pool.seek(pool.position); err != nil {
 		return nil, err
@@ -86,12 +86,12 @@ func Create(poolPath string, filePath string) (*Pool, error) {
 	return &pool, nil
 }
 
-func (p *Pool) Close() error {
+func (p *Pool) PoolClose() error {
 	return p.fd.Close()
 }
 
-// GetBytes Retrieves `count` bytes from the pool.
-func (p *Pool) GetBytes(count int64) (*[]byte, error) {
+// PoolGetBytes Retrieves `count` bytes from the pool.
+func (p *Pool) PoolGetBytes(count int64) (*[]byte, error) {
 	var err error
 	var buffer = make([]byte, count)
 	var newPosition = p.position + count
@@ -110,6 +110,20 @@ func (p *Pool) GetBytes(count int64) (*[]byte, error) {
 	}
 	p.position = newPosition
 	return &buffer, nil
+}
+
+func (p *Pool) PoolGetBytesAsChunks(chunkCount int64, chunkLength int64) (*[][]byte, error) {
+	var err error
+	var buffer *[]byte
+	var result [][]byte
+
+	if buffer, err = p.PoolGetBytes(chunkCount * chunkLength); err != nil {
+		return nil, err
+	}
+	for i := int64(0); i < chunkCount; i++ {
+		result = append(result, (*buffer)[i*chunkLength:(i+1)*chunkLength])
+	}
+	return &result, nil
 }
 
 // getPositionFromFile Retrieves the current position of the position pointer from the underlying file.
