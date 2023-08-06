@@ -28,6 +28,17 @@ func cypher(b1 []byte, b2 []byte) []byte {
 	return result
 }
 
+func processCreatePool() error {
+	var err error
+	var cliSourcePath string
+	var cliPoolPath string
+
+	if _, err = resource.PoolCreate(cliPoolPath, cliSourcePath); err == nil {
+		return fmt.Errorf(`cannot create the pool "%s" from file "%s": %s`, cliPoolPath, cliSourcePath, err.Error())
+	}
+	return nil
+}
+
 func processCreateSession() error {
 	var err error
 	var message *umailData.Message
@@ -60,6 +71,7 @@ func processCreateSession() error {
 		return fmt.Errorf(`not enough bytes left into the key file "%s" (needed %d bytes)`, *cliKeyPath, message.BoundariesCount()*boundaryLength)
 	}
 
+	// Create the session.
 	// `message XOR key` for each `message`
 	// m: a chunk of the message (to hide)
 	// k: a chunk of the key
@@ -67,6 +79,9 @@ func processCreateSession() error {
 	for i, m := range *message {
 		k := (*key)[i]
 		session.AddBoundary(cypher(m, k))
+	}
+	if err = session.Save(cliSessionName); err != nil {
+		return fmt.Errorf(`cannot create the session file "%s": %s`, cliSessionName, err)
 	}
 
 	return nil

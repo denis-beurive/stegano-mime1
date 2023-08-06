@@ -78,7 +78,7 @@ func PoolCreate(poolPath string, filePath string) (*Pool, error) {
 		}
 	}
 
-	// PoolCreate the new pool.
+	// Create the new pool.
 	pool := Pool{path: poolPath, fd: fdPool, position: 0}
 	if err = pool.seek(pool.position); err != nil {
 		return nil, err
