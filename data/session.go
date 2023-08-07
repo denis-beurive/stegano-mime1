@@ -30,7 +30,6 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 	}
 
 	jsonResult := fmt.Sprintf(`{"email-index":%d,"boundaries":%s}`, s.EmailIndex, boundaries)
-	fmt.Printf("===> %s\n", jsonResult)
 	return []byte(jsonResult), nil
 }
 

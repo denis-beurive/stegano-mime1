@@ -14,7 +14,7 @@ func TestPoolCreate(t *testing.T) {
 
 	p, err = PoolCreate(poolPath, sourcePath)
 	assert.Nil(t, err)
-	defer p.PoolClose()
+	defer p.Close()
 
 	// Check the length of the file.
 	info, err = os.Stat(poolPath)
@@ -40,11 +40,11 @@ func TestPoolOpen(t *testing.T) {
 	// PoolCreate a pool.
 	p, err = PoolCreate(poolPath, sourcePath)
 	assert.Nil(t, err)
-	p.PoolClose()
+	p.Close()
 
 	p, err = PoolOpen(poolPath)
 	assert.Nil(t, err)
-	defer p.PoolClose()
+	defer p.Close()
 
 	// Make sure that the position pointer is well set (the position should be 0).
 	content, err = os.ReadFile(poolPath)
@@ -63,15 +63,15 @@ func TestPoolGetBytes(t *testing.T) {
 	// PoolCreate a pool.
 	p, err = PoolCreate(poolPath, sourcePath)
 	assert.Nil(t, err)
-	p.PoolClose()
+	p.Close()
 
 	p, err = PoolOpen(poolPath)
 	assert.Nil(t, err)
-	defer p.PoolClose()
+	defer p.Close()
 
 	// Consume all the pool two bytes at a time.
 	for i := 0; i < poolLength/sliceLength; i++ {
-		content, err = p.PoolGetBytes(sliceLength)
+		content, err = p.GetBytes(sliceLength)
 		assert.Nil(t, err)
 		assert.Equal(t, sliceLength, len(*content))
 		assert.Equal(t, uint8(2*i), (*content)[0])
@@ -79,7 +79,7 @@ func TestPoolGetBytes(t *testing.T) {
 	}
 
 	// We'll get an error...
-	_, err = p.PoolGetBytes(sliceLength)
+	_, err = p.GetBytes(sliceLength)
 	assert.NotNil(t, err)
 }
 
@@ -92,13 +92,13 @@ func TestPoolGetBytesAsChunks(t *testing.T) {
 	// PoolCreate a pool.
 	p, err = PoolCreate(poolPath, sourcePath)
 	assert.Nil(t, err)
-	p.PoolClose()
+	p.Close()
 
 	p, err = PoolOpen(poolPath)
 	assert.Nil(t, err)
-	defer p.PoolClose()
+	defer p.Close()
 
-	chunks, err = p.PoolGetBytesAsChunks(poolLength/sliceLength, sliceLength)
+	chunks, err = p.GetBytesAsChunks(poolLength/sliceLength, sliceLength)
 	assert.Nil(t, err)
 	assert.Equal(t, poolLength/sliceLength, len(*chunks))
 	for i := 0; i < poolLength/sliceLength; i++ {
@@ -108,6 +108,6 @@ func TestPoolGetBytesAsChunks(t *testing.T) {
 	}
 
 	// We'll get an error...
-	_, err = p.PoolGetBytes(sliceLength)
+	_, err = p.GetBytes(sliceLength)
 	assert.NotNil(t, err)
 }
