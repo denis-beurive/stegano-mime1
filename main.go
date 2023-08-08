@@ -14,6 +14,7 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -53,6 +54,10 @@ func logError(messages []string) {
 		fmt.Printf("%s\n", message)
 	}
 	os.Exit(1)
+}
+
+func byte2boundary(inBytes []byte) string {
+	return hex.EncodeToString(inBytes)
 }
 
 func cypher(b1 []byte, b2 []byte) []byte {
@@ -258,7 +263,7 @@ func processSend() error {
 	if body, err = os.ReadFile(bodyPath); err != nil {
 		return fmt.Errorf(`cannot load the email body from file "%s": %s`, bodyPath, err.Error())
 	}
-	if err = session.Load(sessionFile); err != err {
+	if err = session.Load(sessionFile); err != nil {
 		return fmt.Errorf(`cannot load the session (%s) data from file "%s": %s`, sessionName, sessionFile, err.Error())
 	}
 
@@ -309,8 +314,35 @@ func processSend() error {
 	return nil
 }
 
+func processSessionInfo() error {
+	var err error
+	var sessionName string
+	var sessionFile string
+	var session umailData.Session
+
+	if len(os.Args) != 2 {
+		return fmt.Errorf(`invalid number of arguments (%d instead of 1)`, len(os.Args))
+	}
+	sessionName = os.Args[1]
+	sessionFile = path.Join(sessionDir, sessionName)
+	if err = session.Load(sessionFile); err != nil {
+		return fmt.Errorf(`cannot load the session (%s) data from file "%s": %s`, sessionName, sessionFile, err.Error())
+	}
+	fmt.Printf("name: \"%s\"\n", sessionName)
+	fmt.Printf("file: \"%s\"\n", sessionFile)
+	fmt.Printf("index: %d\n", session.EmailIndex)
+	fmt.Printf("boundaries (%d):\n", len(session.Boundaries))
+	for i := 0; i < len(session.Boundaries); i++ {
+		fmt.Printf("[%3d] \"%s\"\n", i, byte2boundary(session.Boundaries[i]))
+	}
+	fmt.Printf("number of emails to send: %d\n", len(session.Boundaries)-session.EmailIndex)
+	return nil
+
+}
+
 var Actions = map[string]ActionData{
 	"info":           {Description: `print information about the application`, Handler: processInfo},
+	"info-session":   {Description: `print information about a session`, Handler: processSessionInfo},
 	"create-key":     {Description: `create an "encryption/decryption" key (from a given file)`, Handler: processCreateKey},
 	"create-session": {Description: `create a mailing session`, Handler: processCreateSession},
 	"key-index":      {Description: `show the key index`, Handler: processGetKeyIndex},
