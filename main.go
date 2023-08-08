@@ -13,9 +13,12 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/smtp"
 	"os"
 	"path"
 	umailData "umail/data"
@@ -24,10 +27,13 @@ import (
 
 const defaultAppDataBaseName = ".smailer"
 const sessionSubDir = "sessions"
-const keysSubDir = "keys"
-const defaultBodyPath = "body.txt"
+const keySubDir = "keys"
 const defaultMessagePath = "message.txt"
 const defaultKeyName = "key"
+
+const DefaultSmtpPort = 465
+const DefaultSmtpServerAddress = "localhost"
+const DefaultBodyFile = "body.txt"
 
 // boundaryLength The length, in bytes, of a boundary. Do not modify this value.
 // Please note that 35 bytes can be used to represent 70 hexadecimal characters.
@@ -150,7 +156,7 @@ func initEnv() error {
 	}
 	appDir = path.Join(homeDir, defaultAppDataBaseName)
 	sessionDir = path.Join(appDir, sessionSubDir)
-	keyDir = path.Join(appDir, keysSubDir)
+	keyDir = path.Join(appDir, keySubDir)
 
 	if info, err = os.Stat(appDir); err != nil {
 		if os.IsNotExist(err) {
@@ -199,11 +205,116 @@ func processGetKeyIndex() error {
 	return nil
 }
 
+func buildMessage(headers map[string]string, body string) string {
+	message := ""
+	for k, v := range headers {
+		message += fmt.Sprintf("%s: %s\r\n", k, v)
+	}
+	message += "\r\n" + body
+	return message
+}
+
+func processSend() error {
+	var err error
+	var keyName string
+	var sessionName string
+	var sessionFile string
+	var to string
+	var from string
+	var password string
+	var subject string
+	var bodyPath string
+	var body []byte
+	var smtpServerAddress string
+	var smtpServerPort int
+	var auth smtp.Auth
+	var connection *tls.Conn
+	var smtpClient *smtp.Client
+	var smtpUri string
+	var tlsConfig *tls.Config
+	var writer io.WriteCloser
+	var session umailData.Session
+	var headers map[string]string
+	var message string
+
+	// Parse the command line.
+	flag.StringVar(&smtpServerAddress, "smtp", DefaultSmtpServerAddress, fmt.Sprintf("address of the SMTP server (default: %s)", DefaultSmtpServerAddress))
+	flag.IntVar(&smtpServerPort, "port", DefaultSmtpPort, fmt.Sprintf("SMTP server port number (default: %d)", DefaultSmtpPort))
+	flag.StringVar(&password, "password", "", "sender password used for authentication")
+	flag.StringVar(&bodyPath, "body", DefaultBodyFile, fmt.Sprintf("path to the file that contains the email's body (default: %s)", DefaultBodyFile))
+	flag.StringVar(&keyName, "key", defaultKeyName, fmt.Sprintf("name of the key (default: %s)", defaultKeyName))
+	flag.Parse()
+
+	if len(flag.Args()) != 4 {
+		return fmt.Errorf(`invalid number of arguments (%d instead of 4)`, len(flag.Args()))
+	}
+	sessionName = flag.Arg(0)
+	from = flag.Arg(1)
+	to = flag.Arg(2)
+	subject = flag.Arg(3)
+
+	// Load all data from files.
+	sessionFile = path.Join(sessionDir, sessionName)
+	if body, err = os.ReadFile(bodyPath); err != nil {
+		return fmt.Errorf(`cannot load the email body from file "%s": %s`, bodyPath, err.Error())
+	}
+	if err = session.Load(sessionFile); err != err {
+		return fmt.Errorf(`cannot load the session (%s) data from file "%s": %s`, sessionName, sessionFile, err.Error())
+	}
+
+	// Open connexion to the SMTP server.
+	auth = smtp.PlainAuth("", from, password, smtpServerAddress)
+	smtpUri = fmt.Sprintf("%s:%d", smtpServerAddress, smtpServerPort)
+	tlsConfig = &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         smtpServerAddress,
+	}
+	if connection, err = tls.Dial("tcp", smtpUri, tlsConfig); err != nil {
+		return fmt.Errorf(`cannot connect to SMTPS server on "%s" (TLS enabled): %s`, smtpUri, err.Error())
+	}
+	if smtpClient, err = smtp.NewClient(connection, smtpServerAddress); err != nil {
+		return fmt.Errorf(`cannot connect to SMTPS server on "%s" (TLS enabled): %s`, smtpUri, err.Error())
+	}
+	if err = smtpClient.Auth(auth); err != nil {
+		return fmt.Errorf(`cannot authenticate on SMTPS server on "%s" (TLS enabled): %s`, smtpUri, err.Error())
+	}
+
+	// Send the email.
+	headers = map[string]string{
+		"From":    from,
+		"To":      to,
+		"Subject": subject,
+	}
+	message = buildMessage(headers, string(body))
+
+	if err = smtpClient.Mail(from); err != nil {
+		return fmt.Errorf(`error while sending "MAIL FROM:%s<CRLF>" command: %s`, from, err.Error())
+	}
+	if err = smtpClient.Rcpt(to); err != nil {
+		return fmt.Errorf(`error while sending "MAIL TO:%s<CRLF>" command: %s`, to, err.Error())
+	}
+	if writer, err = smtpClient.Data(); err != nil {
+		return fmt.Errorf(`error while sending "DATA<CRLF>" command: %s`, err.Error())
+	}
+	if _, err = writer.Write([]byte(message)); err != nil {
+		return fmt.Errorf(`error while sending sending the message to send: %s`, err.Error())
+	}
+	if err = writer.Close(); err != nil {
+		return fmt.Errorf(`error while closing SMTP writer: %s`, err.Error())
+	}
+	if err = smtpClient.Quit(); err != nil {
+		return fmt.Errorf(`error while sending "QUIT<CRLF>" command: %s`, err.Error())
+	}
+
+	return nil
+}
+
 var Actions = map[string]ActionData{
 	"info":           {Description: `print information about the application`, Handler: processInfo},
-	"create-key":     {Description: `create a key (from a given file)`, Handler: processCreateKey},
-	"create-session": {Description: `create a session`, Handler: processCreateSession},
+	"create-key":     {Description: `create an "encryption/decryption" key (from a given file)`, Handler: processCreateKey},
+	"create-session": {Description: `create a mailing session`, Handler: processCreateSession},
 	"key-index":      {Description: `show the key index`, Handler: processGetKeyIndex},
+	"send":           {Description: `send a message`, Handler: processSend},
 }
 
 func main() {
