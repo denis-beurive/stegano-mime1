@@ -31,7 +31,6 @@ import (
 	"net/smtp"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	umailData "umail/data"
@@ -49,6 +48,30 @@ const DefaultSmtpPort = 465
 const DefaultImapServerAddress = "localhost"
 const DefaultImapServerPort = 993
 const DefaultBodyFile = "body.txt"
+
+// See https://gist.github.com/tylermakin/d820f65eb3c9dd98d58721c7fb1939a8
+
+const emailTemplate = `--{{BOUNDARY}}
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+Content-Disposition: inline
+
+{{MESSAGE}}
+
+--{{.Boundary}}
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+Content-Disposition: inline
+
+{{.Message}}
+
+--{{Boundary}}--`
+
+// See https://pkg.go.dev/text/template
+type emailContent struct {
+	Boundary string
+	Message  string
+}
 
 // boundaryLength The length, in bytes, of a boundary. Do not modify this value.
 // Please note that 35 bytes can be used to represent 70 hexadecimal characters.
@@ -287,7 +310,7 @@ func processSend() error {
 		"From":         from,
 		"To":           to,
 		"Subject":      subject,
-		"Content-Type": fmt.Sprintf(`multipart/mixed;  boundary="%s"`, session.Boundaries[session.EmailIndex]),
+		"Content-Type": fmt.Sprintf(`multipart/alternative;  boundary="%s"`, session.Boundaries[session.EmailIndex]),
 	}
 	message = buildMessage(headers, string(body))
 
@@ -448,7 +471,7 @@ func processGetMessage() error {
 	}
 
 	var i uint32
-	re := regexp.MustCompile(`Test Boundaries$`)
+	//re := regexp.MustCompile(`Test Boundaries$`)
 	for i = 1; i <= selectedMbox.NumMessages; i++ {
 		var seqSet imap.SeqSet
 		var messages []*imapclient.FetchMessageBuffer
@@ -463,9 +486,9 @@ func processGetMessage() error {
 			return fmt.Errorf("cannot fetch messages from \"INBOX\": %s", err.Error())
 		}
 		fmt.Printf("[Subject] %s\n", messages[0].Envelope.Subject)
-		if !re.Match([]byte(messages[0].Envelope.Subject)) {
-			continue
-		}
+		//if !re.Match([]byte(messages[0].Envelope.Subject)) {
+		//	continue
+		//}
 
 		// Get all the data.
 
@@ -508,10 +531,9 @@ func processGetMessage() error {
 			}
 
 			header := m.Header
-			fmt.Println("Date:", header.Get("Date"))
-			fmt.Println("From:", header.Get("From"))
-			fmt.Println("To:", header.Get("To"))
-			fmt.Println("Subject:", header.Get("Subject"))
+			for k, v := range header {
+				fmt.Printf("%s: %s\n", k, v)
+			}
 
 			body, err := io.ReadAll(m.Body)
 			if err != nil {
