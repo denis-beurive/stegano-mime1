@@ -8,8 +8,10 @@ import (
 )
 
 type Session struct {
-	EmailIndex int       `json:"email-index"`
-	Boundaries [][]uint8 `json:"boundaries"`
+	PoolPointerPosition int64     `json:"pool-position"`
+	PoolName            string    `json:"pool-name"`
+	EmailIndex          int       `json:"email-index"`
+	Boundaries          [][]uint8 `json:"boundaries"`
 }
 
 func (s *Session) MarshalJSON() ([]byte, error) {
@@ -29,13 +31,24 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 		boundaries = "[" + strings.Join(arrays, ",") + "]"
 	}
 
-	jsonResult := fmt.Sprintf(`{"email-index":%d,"boundaries":%s}`, s.EmailIndex, boundaries)
+	jsonResult := fmt.Sprintf(`{"email-index":%d,"pool-name":"%s","pool-position":%d,"boundaries":%s}`, s.EmailIndex, s.PoolName, s.PoolPointerPosition, boundaries)
 	return []byte(jsonResult), nil
 }
 
-func (s *Session) Init() {
+func (s *Session) Init(poolName string, poolPointerPosition int64) {
+	s.PoolName = poolName
+	s.PoolPointerPosition = poolPointerPosition
 	s.EmailIndex = 0
 	s.Boundaries = make([][]uint8, 0)
+}
+
+func (s *Session) Reset(path string) error {
+	var err error
+
+	if err = s.Load(path); err != nil {
+		return err
+	}
+	return s.Save(path)
 }
 
 func (s *Session) AddBoundary(boundary []byte) {

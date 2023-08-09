@@ -8,7 +8,13 @@
 //     dir "%HOMEDRIVE%%HOMEPATH%\.smailer\sessions"
 //     type "%HOMEDRIVE%%HOMEPATH%\.smailer\sessions\first-session"
 //
-//     umail.exe key-index test
+//     umail.exe reset-session first-session
+//
+//     umail.exe info-session first-session
+//
+//     umail.exe info-key test
+//
+//     umail.exe reset-key test 0
 
 package main
 
@@ -17,11 +23,17 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 	"io"
 	"log"
+	"net/mail"
 	"net/smtp"
 	"os"
-	"path"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 	umailData "umail/data"
 	"umail/resource"
 )
@@ -32,8 +44,10 @@ const keySubDir = "keys"
 const defaultMessagePath = "message.txt"
 const defaultKeyName = "key"
 
-const DefaultSmtpPort = 465
 const DefaultSmtpServerAddress = "localhost"
+const DefaultSmtpPort = 465
+const DefaultImapServerAddress = "localhost"
+const DefaultImapServerPort = 993
 const DefaultBodyFile = "body.txt"
 
 // boundaryLength The length, in bytes, of a boundary. Do not modify this value.
@@ -47,6 +61,11 @@ var keyDir string
 type ActionData struct {
 	Description string
 	Handler     func() error
+}
+
+type Email struct {
+	Header string
+	Body   string
 }
 
 func logError(messages []string) {
@@ -75,7 +94,7 @@ func processCreateKey() error {
 	var err error
 	var cliPoolName = os.Args[1]
 	var cliSourcePath = os.Args[2]
-	var poolPath = path.Join(keyDir, cliPoolName)
+	var poolPath = filepath.Join(keyDir, cliPoolName)
 
 	if _, err = resource.PoolCreate(poolPath, cliSourcePath); err != nil {
 		return fmt.Errorf(`cannot create the pool "%s" (%s) from file "%s": %s`, cliPoolName, poolPath, cliSourcePath, err.Error())
@@ -87,7 +106,7 @@ func processCreateSession() error {
 	var err error
 	var message *umailData.Message = &umailData.Message{}
 	var pool *resource.Pool
-	//var poolPosition *int64
+	var poolPointerPosition int64
 	var session umailData.Session
 	var key *[][]byte
 	var cliSessionName string
@@ -104,17 +123,15 @@ func processCreateSession() error {
 		return fmt.Errorf("invalid command line: wrong number of arguments (%d)", len(flag.Args()))
 	}
 	cliSessionName = flag.Arg(0)
-	cliSessionPath = path.Join(sessionDir, cliSessionName)
-	cliKeyPath = path.Join(keyDir, *cliKeyName)
+	cliSessionPath = filepath.Join(sessionDir, cliSessionName)
+	cliKeyPath = filepath.Join(keyDir, *cliKeyName)
 
-	// Open the key and retrieve the current position on the position pointer.
+	// Open the key and retrieve the current position of the position pointer.
 	if pool, err = resource.PoolOpen(cliKeyPath); err != nil {
 		return fmt.Errorf(`cannot open key file "%s": %s`, cliKeyPath, err)
 	}
 	defer pool.Close()
-	//if poolPosition, err = pool.GetPositionFromFile(true); err != nil {
-	//	return err
-	//}
+	poolPointerPosition = pool.Position
 
 	// Load the message. The message is organized into chunks of data.
 	if err = message.Load(*cliMessagePath, boundaryLength); err != nil {
@@ -132,7 +149,7 @@ func processCreateSession() error {
 	// `message XOR key` for each `message`
 	// m: a chunk of the message (to hide)
 	// k: a chunk of the key
-	session.Init()
+	session.Init(*cliKeyName, poolPointerPosition)
 	for i, m := range *message {
 		k := (*key)[i]
 		session.AddBoundary(cypher(m, k))
@@ -159,9 +176,9 @@ func initEnv() error {
 	if homeDir, err = os.UserHomeDir(); err != nil {
 		log.Fatal(err)
 	}
-	appDir = path.Join(homeDir, defaultAppDataBaseName)
-	sessionDir = path.Join(appDir, sessionSubDir)
-	keyDir = path.Join(appDir, keySubDir)
+	appDir = filepath.Join(homeDir, defaultAppDataBaseName)
+	sessionDir = filepath.Join(appDir, sessionSubDir)
+	keyDir = filepath.Join(appDir, keySubDir)
 
 	if info, err = os.Stat(appDir); err != nil {
 		if os.IsNotExist(err) {
@@ -186,30 +203,6 @@ func initEnv() error {
 	return nil
 }
 
-func processGetKeyIndex() error {
-	var err error
-	var keyPath string
-	var keyName string
-	var position *int64
-	var pool *resource.Pool
-
-	if len(os.Args) != 2 {
-		return fmt.Errorf(`invalid number of argments (%d)`, len(os.Args))
-	}
-	keyName = os.Args[1]
-	keyPath = path.Join(keyDir, keyName)
-	if pool, err = resource.PoolOpen(keyPath); err != nil {
-		return err
-	}
-	defer pool.Close()
-	if position, err = pool.GetPositionFromFile(false); err != nil {
-		return err
-	}
-	fmt.Printf("index for key \"%s\": %d\n", keyName, *position)
-
-	return nil
-}
-
 func buildMessage(headers map[string]string, body string) string {
 	message := ""
 	for k, v := range headers {
@@ -223,7 +216,7 @@ func processSend() error {
 	var err error
 	var keyName string
 	var sessionName string
-	var sessionFile string
+	var sessionPath string
 	var to string
 	var from string
 	var password string
@@ -259,12 +252,17 @@ func processSend() error {
 	subject = flag.Arg(3)
 
 	// Load all data from files.
-	sessionFile = path.Join(sessionDir, sessionName)
+	sessionPath = filepath.Join(sessionDir, sessionName)
 	if body, err = os.ReadFile(bodyPath); err != nil {
 		return fmt.Errorf(`cannot load the email body from file "%s": %s`, bodyPath, err.Error())
 	}
-	if err = session.Load(sessionFile); err != nil {
-		return fmt.Errorf(`cannot load the session (%s) data from file "%s": %s`, sessionName, sessionFile, err.Error())
+	if err = session.Load(sessionPath); err != nil {
+		return fmt.Errorf(`cannot load the session (%s) data from file "%s": %s`, sessionName, sessionPath, err.Error())
+	}
+
+	// Make sure that the session has not already been processed.
+	if session.EmailIndex >= len(session.Boundaries) {
+		return fmt.Errorf(`the session "%s" has already been processed`, sessionName)
 	}
 
 	// Open connexion to the SMTP server.
@@ -286,9 +284,10 @@ func processSend() error {
 
 	// Send the email.
 	headers = map[string]string{
-		"From":    from,
-		"To":      to,
-		"Subject": subject,
+		"From":         from,
+		"To":           to,
+		"Subject":      subject,
+		"Content-Type": fmt.Sprintf(`multipart/mixed;  boundary="%s"`, session.Boundaries[session.EmailIndex]),
 	}
 	message = buildMessage(headers, string(body))
 
@@ -311,26 +310,36 @@ func processSend() error {
 		return fmt.Errorf(`error while sending "QUIT<CRLF>" command: %s`, err.Error())
 	}
 
+	session.EmailIndex += 1
+	if err = session.Save(sessionPath); err != nil {
+		return fmt.Errorf(`cannot update session "%s" (path: %s): %s`, sessionName, sessionPath, err.Error())
+	}
+
+	fmt.Printf("Number of emails sent: %d (onver %s)\n", session.EmailIndex, len(session.Boundaries))
+	if session.EmailIndex >= len(session.Boundaries) {
+		fmt.Printf("The session has been entirely processes.\n")
+	}
+
 	return nil
 }
 
 func processSessionInfo() error {
 	var err error
 	var sessionName string
-	var sessionFile string
+	var sessionPath string
 	var session umailData.Session
 
 	if len(os.Args) != 2 {
 		return fmt.Errorf(`invalid number of arguments (%d instead of 1)`, len(os.Args))
 	}
 	sessionName = os.Args[1]
-	sessionFile = path.Join(sessionDir, sessionName)
-	if err = session.Load(sessionFile); err != nil {
-		return fmt.Errorf(`cannot load the session (%s) data from file "%s": %s`, sessionName, sessionFile, err.Error())
+	sessionPath = filepath.Join(sessionDir, sessionName)
+	if err = session.Load(sessionPath); err != nil {
+		return fmt.Errorf(`cannot load the session (%s) data from file "%s": %s`, sessionName, sessionPath, err.Error())
 	}
-	fmt.Printf("name: \"%s\"\n", sessionName)
-	fmt.Printf("file: \"%s\"\n", sessionFile)
-	fmt.Printf("index: %d\n", session.EmailIndex)
+	fmt.Printf("name: \"%s\" (%s)\n", sessionName, sessionPath)
+	fmt.Printf("pool: \"%s\" (%s) at %d\n", session.PoolName, filepath.Join(keyDir, session.PoolName), session.PoolPointerPosition)
+	fmt.Printf("email sent: %d\n", session.EmailIndex)
 	fmt.Printf("boundaries (%d):\n", len(session.Boundaries))
 	for i := 0; i < len(session.Boundaries); i++ {
 		fmt.Printf("[%3d] \"%s\"\n", i, byte2boundary(session.Boundaries[i]))
@@ -340,13 +349,194 @@ func processSessionInfo() error {
 
 }
 
+func procesSessionReset() error {
+	var err error
+	var sessionName string
+	var sessionPath string
+	var session umailData.Session
+
+	if len(os.Args) != 2 {
+		return fmt.Errorf(`invalid number of arguments (%d instead of 1)`, len(os.Args))
+	}
+	sessionName = os.Args[1]
+	sessionPath = filepath.Join(sessionDir, sessionName)
+	if err = session.Load(sessionPath); err != nil {
+		return fmt.Errorf(`cannot load the session (%s) data from file "%s": %s`, sessionName, sessionPath, err.Error())
+	}
+	return session.Reset(sessionPath)
+}
+
+func processPoolReset() error {
+	var err error
+	var cliPoolName string
+	var cliPoolPointerPosition int64
+	var poolPath string
+	var pool *resource.Pool
+
+	if len(os.Args) != 3 {
+		return fmt.Errorf(`invalid number of arguments (%d instead of 3)`, len(os.Args))
+	}
+	cliPoolName = os.Args[1]
+	if cliPoolPointerPosition, err = strconv.ParseInt(os.Args[2], 10, 64); err != nil {
+		return fmt.Errorf(`invalid position (%s)`, os.Args[2])
+	}
+	poolPath = filepath.Join(keyDir, cliPoolName)
+	if pool, err = resource.PoolOpen(poolPath); err != nil {
+		return fmt.Errorf(`cannot open key file "%s": %s`, poolPath, err)
+	}
+	defer pool.Close()
+	if err = pool.SetPositionToFile(cliPoolPointerPosition); err != nil {
+		return fmt.Errorf(`cannot set the value of the position pointer's position: %s`, err.Error())
+	}
+	return nil
+}
+
+func processPoolInfo() error {
+	var err error
+	var cliPoolName string
+	var poolPath string
+	var pool *resource.Pool
+
+	if len(os.Args) != 2 {
+		return fmt.Errorf(`invalid number of arguments (%d instead of 2)`, len(os.Args))
+	}
+	cliPoolName = os.Args[1]
+	poolPath = filepath.Join(keyDir, cliPoolName)
+	if pool, err = resource.PoolOpen(poolPath); err != nil {
+		return fmt.Errorf(`cannot open key file "%s": %s`, poolPath, err)
+	}
+	defer pool.Close()
+	fmt.Printf("file: \"%s\"\n", poolPath)
+	fmt.Printf("current read position: %d\n", pool.Position)
+	return nil
+}
+
+func processGetMessage() error {
+	var err error
+	var user string
+	var password string
+	var imapServerAddress string
+	var imapServerPort int
+	var imapClient *imapclient.Client
+	var imapUri string
+	var mailboxes []*imap.ListData
+	var selectedMbox *imap.SelectData
+
+	// Parse the command line.
+	flag.StringVar(&imapServerAddress, "imap", DefaultImapServerAddress, fmt.Sprintf("address of the IMAP server (default: %s)", DefaultImapServerAddress))
+	flag.IntVar(&imapServerPort, "port", DefaultImapServerPort, fmt.Sprintf("SMTP server port number (default: %d)", DefaultImapServerPort))
+	flag.StringVar(&user, "user", "", fmt.Sprintf("imap user"))
+	flag.StringVar(&password, "password", "", "sender password used for authentication")
+	flag.Parse()
+
+	imapUri = fmt.Sprintf("%s:%d", imapServerAddress, imapServerPort)
+	if imapClient, err = imapclient.DialTLS(imapUri, nil); nil != err {
+		return fmt.Errorf("cannot open connection to IMAP server at \"%s\": %s", imapUri, err.Error())
+	}
+	defer imapClient.Close()
+	if err = imapClient.Login(user, password).Wait(); nil != err {
+		return fmt.Errorf("annot authenticate as \"%s\" (password: %s): %s", user, password, err.Error())
+	}
+	if mailboxes, err = imapClient.List("", "%", nil).Collect(); nil != err {
+		return fmt.Errorf("cannot get the list of mailboxes: %s", err.Error())
+	}
+	for _, mbox := range mailboxes {
+		fmt.Printf("mailbox: [%s]\n", mbox.Mailbox)
+	}
+	if selectedMbox, err = imapClient.Select("INBOX", nil).Wait(); err != nil {
+		fmt.Printf("Cannot select mailbox \"INBOX\": %s", err.Error())
+	}
+
+	var i uint32
+	re := regexp.MustCompile(`Test Boundaries$`)
+	for i = 1; i <= selectedMbox.NumMessages; i++ {
+		var seqSet imap.SeqSet
+		var messages []*imapclient.FetchMessageBuffer
+		var fetchOptions *imap.FetchOptions
+		var email = Email{Body: "", Header: ""}
+
+		seqSet = imap.SeqSetNum(i)
+
+		// Get the subject only.
+		fetchOptions = &imap.FetchOptions{Envelope: true}
+		if messages, err = imapClient.Fetch(seqSet, fetchOptions).Collect(); nil != err {
+			return fmt.Errorf("cannot fetch messages from \"INBOX\": %s", err.Error())
+		}
+		fmt.Printf("[Subject] %s\n", messages[0].Envelope.Subject)
+		if !re.Match([]byte(messages[0].Envelope.Subject)) {
+			continue
+		}
+
+		// Get all the data.
+
+		fetchOptions = &imap.FetchOptions{
+			Flags:    true,
+			Envelope: true,
+			UID:      true,
+			BodySection: []*imap.FetchItemBodySection{
+				{Specifier: imap.PartSpecifierHeader},
+				{Specifier: imap.PartSpecifierText},
+				{Specifier: imap.PartSpecifierNone},
+			},
+		}
+		if messages, err = imapClient.Fetch(seqSet, fetchOptions).Collect(); nil != err {
+			return fmt.Errorf("cannot fetch messages from \"INBOX\": %s", err.Error())
+		}
+		for j, message := range messages {
+			fmt.Printf("===========================================\n")
+			fmt.Printf("%04d [%0d] UID:%05d: %s\n", i, j, message.UID, message.Envelope.Subject)
+			fmt.Printf("   Flags: %v\n", message.Flags)
+
+			for data, buf := range message.BodySection {
+				if data.Specifier == "" {
+					continue
+				}
+				//fmt.Printf("[%s] <===> %s\n\n", data.Specifier, string(buf))
+				if "HEADER" == data.Specifier {
+					email.Header = string(buf)
+				}
+				if "TEXT" == data.Specifier {
+					email.Body = string(buf)
+				}
+			}
+			emailText := fmt.Sprintf("%s\r\n\r\n%s", email.Header, email.Body)
+			//fmt.Printf("==> %s\n\n", emailText)
+			r := strings.NewReader(emailText)
+			m, err := mail.ReadMessage(r)
+			if err != nil {
+				return fmt.Errorf(`%s`, err)
+			}
+
+			header := m.Header
+			fmt.Println("Date:", header.Get("Date"))
+			fmt.Println("From:", header.Get("From"))
+			fmt.Println("To:", header.Get("To"))
+			fmt.Println("Subject:", header.Get("Subject"))
+
+			body, err := io.ReadAll(m.Body)
+			if err != nil {
+				return fmt.Errorf("%s", err)
+			}
+			fmt.Printf("%s", body)
+		}
+	}
+
+	if err := imapClient.Logout().Wait(); nil != err {
+		return fmt.Errorf("cannot logout: %s", err.Error())
+	}
+	return nil
+}
+
 var Actions = map[string]ActionData{
 	"info":           {Description: `print information about the application`, Handler: processInfo},
 	"info-session":   {Description: `print information about a session`, Handler: processSessionInfo},
-	"create-key":     {Description: `create an "encryption/decryption" key (from a given file)`, Handler: processCreateKey},
 	"create-session": {Description: `create a mailing session`, Handler: processCreateSession},
-	"key-index":      {Description: `show the key index`, Handler: processGetKeyIndex},
+	"reset-session":  {Description: `reset the session`, Handler: procesSessionReset},
+	"create-key":     {Description: `create an "encryption/decryption" key (from a given file)`, Handler: processCreateKey},
+	"reset-key":      {Description: `rester the pool's pointer position'`, Handler: processPoolReset},
+	"info-key":       {Description: `print information about an "encryption/decryption" key`, Handler: processPoolInfo},
 	"send":           {Description: `send a message`, Handler: processSend},
+	"rcv":            {Description: `retrieve emails`, Handler: processGetMessage},
 }
 
 func main() {

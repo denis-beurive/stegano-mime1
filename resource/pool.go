@@ -11,12 +11,12 @@ import (
 const positionTypeLength = 8 // the size, in bytes, of "int64"
 
 type Pool struct {
-	path     string
+	Path     string
 	fd       *os.File
-	position int64
+	Position int64
 }
 
-// PoolOpen Opens an existing pool identified by its path.
+// PoolOpen Opens an existing pool identified by its Path.
 func PoolOpen(filePath string) (*Pool, error) {
 	var err error
 	var fd *os.File
@@ -26,13 +26,13 @@ func PoolOpen(filePath string) (*Pool, error) {
 	if fd, err = os.OpenFile(filePath, os.O_RDWR, 0644); err != nil {
 		return nil, err
 	}
-	p = Pool{path: filePath, fd: fd, position: 0}
-	// Retrieve the position of the position pointer from the underlying file.
+	p = Pool{Path: filePath, fd: fd, Position: 0}
+	// Retrieve the Position of the Position pointer from the underlying file.
 	if position, err = p.GetPositionFromFile(true); err != nil {
 		return nil, err
 	}
-	p.position = *position
-	return &Pool{path: filePath, fd: fd, position: *position}, nil
+	p.Position = *position
+	return &Pool{Path: filePath, fd: fd, Position: *position}, nil
 }
 
 // PoolCreate Creates a new pool from the content of a file.
@@ -52,7 +52,7 @@ func PoolCreate(poolPath string, filePath string) (*Pool, error) {
 		return nil, err
 	}
 
-	// Initialise the position of the position pointer.
+	// Initialise the Position of the Position pointer.
 	if _, err = fdPool.Write(position); err != nil {
 		return nil, err
 	}
@@ -75,8 +75,8 @@ func PoolCreate(poolPath string, filePath string) (*Pool, error) {
 	}
 
 	// Create the new pool.
-	pool := Pool{path: poolPath, fd: fdPool, position: 0}
-	if err = pool.seek(pool.position); err != nil {
+	pool := Pool{Path: poolPath, fd: fdPool, Position: 0}
+	if err = pool.seek(pool.Position); err != nil {
 		return nil, err
 	}
 	return &pool, nil
@@ -86,25 +86,28 @@ func (p *Pool) Close() error {
 	return p.fd.Close()
 }
 
-// GetBytes Retrieves `count` bytes from the pool.
+// GetBytes Retrieves `count` bytes from the pool, starting as the current position pointer's position.
+// Please note that this method does *NOT* set the position of the position pointer prior retrieving bytes.
+// The position pointer should have been moved to its current position while the pool has been opened (by calling
+// `PoolOpen`)
 func (p *Pool) GetBytes(count int64) (*[]byte, error) {
 	var err error
 	var buffer = make([]byte, count)
-	var newPosition = p.position + count
+	var newPosition = p.Position + count
 
 	if count <= 0 {
 		panic(fmt.Errorf(`invalid number of bytes (%d)`, count))
 	}
 	if _, err = io.ReadFull(p.fd, buffer); err != nil {
-		return nil, fmt.Errorf(`cannot extract %d bytes from pool "%s", from position %d: %s`, count, p.path, p.position, err.Error())
+		return nil, fmt.Errorf(`cannot extract %d bytes from pool "%s", from Position %d: %s`, count, p.Path, p.Position, err.Error())
 	}
-	if err = p.setPositionToFile(newPosition); err != nil {
+	if err = p.SetPositionToFile(newPosition); err != nil {
 		return nil, err
 	}
 	if err = p.seek(newPosition); err != nil {
 		return nil, err
 	}
-	p.position = newPosition
+	p.Position = newPosition
 	return &buffer, nil
 }
 
@@ -122,12 +125,10 @@ func (p *Pool) GetBytesAsChunks(chunkCount int64, chunkLength int64) (*[][]byte,
 	return &result, nil
 }
 
-// GetPositionFromFile Retrieves the current position of the position pointer from the underlying file.
+// GetPositionFromFile Retrieves the value of position pointer's position from the underlying file.
 // Please note that a call to this method:
-// - does not (re)position the position pointer, unless `seek` is set to `true`.
-// - does not modify the value of `p.position`.
-// Warning: if you call this method, then keep in mind that the position pointer will be
-// repositioned to the *beginning* of the sequence of bytes, unless `seek` is set to `true`.
+// - does *NOT* (re)Position the Position pointer, unless `seek` is set to `true`.
+// - does *NOT* modify the value of `p.Position`.
 func (p *Pool) GetPositionFromFile(seek bool) (*int64, error) {
 	var err error
 	var buffer = make([]byte, positionTypeLength)
@@ -141,13 +142,13 @@ func (p *Pool) GetPositionFromFile(seek bool) (*int64, error) {
 		return nil, err
 	}
 	if n != positionTypeLength {
-		return nil, fmt.Errorf(`invalid pool "%s": no position found`, p.path)
+		return nil, fmt.Errorf(`invalid pool "%s": no Position found`, p.Path)
 	}
 	if err = binary.Read(bytes.NewReader(buffer), binary.LittleEndian, &position); err != nil {
 		return nil, err
 	}
 	if position < 0 {
-		return nil, fmt.Errorf(`invalid pool "%s": invalid pool position (%d)`, p.path, position)
+		return nil, fmt.Errorf(`invalid pool "%s": invalid pool Position (%d)`, p.Path, position)
 	}
 	if seek {
 		if err = p.seek(position); err != nil {
@@ -158,13 +159,11 @@ func (p *Pool) GetPositionFromFile(seek bool) (*int64, error) {
 	return &position, nil
 }
 
-// setPositionToFile Sets the position pointer to `position` within the underlying file.
+// SetPositionToFile Sets the value of the position pointer's position to `Position` within the underlying file.
 // Please note that a call to this method:
-// - does not (re)position the position pointer. To (re)position the position pointer, you must use `seek()`.
-// - does not modify the value of `p.position`.
-// Warning: if you call this method within a unit test, then keep in mind that the position pointer will be
-// repositioned to the beginning of the sequence of bytes!
-func (p *Pool) setPositionToFile(position int64) error {
+// - does *NOT* (re)Position the Position pointer. To (re)Position the Position pointer, you must use `seek()`.
+// - does *NOT* modify the value of `p.Position`.
+func (p *Pool) SetPositionToFile(position int64) error {
 	var err error
 	var positionBuffer = new(bytes.Buffer)
 
@@ -178,8 +177,8 @@ func (p *Pool) setPositionToFile(position int64) error {
 	return err
 }
 
-// seek Sets the position pointer to `position`.
-// Please keep in mind that this method does not modify the value of `p.position`.
+// seek Sets the Position pointer to `Position`.
+// Please keep in mind that this method does not modify the value of `p.Position`.
 func (p *Pool) seek(position int64) error {
 	_, err := p.fd.Seek(position+positionTypeLength, io.SeekStart)
 	return err

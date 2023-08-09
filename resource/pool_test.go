@@ -46,7 +46,7 @@ func TestPoolOpen(t *testing.T) {
 	assert.Nil(t, err)
 	defer p.Close()
 
-	// Make sure that the position pointer is well set (the position should be 0).
+	// Make sure that the Position pointer is well set (the Position should be 0).
 	content, err = os.ReadFile(poolPath)
 	assert.Nil(t, err)
 	for i := 0; i < positionTypeLength; i++ {
