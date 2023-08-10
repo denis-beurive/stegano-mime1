@@ -1,24 +1,25 @@
 // Usage:
 //
-//     umail.exe create-key test random-data.dat
+//     $out = new-object byte[] 1048576; (new-object Random).NextBytes($out); [IO.File]::WriteAllBytes('random-data.bin', $out)
+//
+//     umail.exe create-key test random-data.bin
 //     dir "%HOMEDRIVE%%HOMEPATH%\.smailer\keys"
 //     dir "%HOMEDRIVE%%HOMEPATH%\.smailer\sessions"
 //
-//     umail.exe create-session --key=test --message=README.md first-session
+//     umail.exe create-session --key=test --message=message.txt first-session
 //     dir "%HOMEDRIVE%%HOMEPATH%\.smailer\sessions"
 //     type "%HOMEDRIVE%%HOMEPATH%\.smailer\sessions\first-session"
 //
 //     umail.exe reset-session first-session
-//
 //     umail.exe info-session first-session
 //
-//     umail.exe info-key test
-//
 //     umail.exe reset-key test 0
+//     umail.exe info-key test
 
 package main
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/hex"
 	"flag"
@@ -33,6 +34,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"text/template"
 	umailData "umail/data"
 	"umail/resource"
 )
@@ -47,25 +49,27 @@ const DefaultSmtpServerAddress = "localhost"
 const DefaultSmtpPort = 465
 const DefaultImapServerAddress = "localhost"
 const DefaultImapServerPort = 993
-const DefaultBodyFile = "body.txt"
+const DefaultBodyFile = "body1.txt"
 
 // See https://gist.github.com/tylermakin/d820f65eb3c9dd98d58721c7fb1939a8
 
-const emailTemplate = `--{{BOUNDARY}}
+const emailTemplate = `--{{.Boundary}}
 Content-Type: text/plain; charset="utf-8"
 Content-Transfer-Encoding: quoted-printable
 Content-Disposition: inline
 
-{{MESSAGE}}
+{{.Message}}
 
 --{{.Boundary}}
 Content-Type: text/html; charset="utf-8"
 Content-Transfer-Encoding: quoted-printable
 Content-Disposition: inline
 
+<pre>
 {{.Message}}
+</pre>
 
---{{Boundary}}--`
+--{{.Boundary}}--`
 
 // See https://pkg.go.dev/text/template
 type emailContent struct {
@@ -98,7 +102,7 @@ func logError(messages []string) {
 	os.Exit(1)
 }
 
-func byte2boundary(inBytes []byte) string {
+func boundaryAsString(inBytes []byte) string {
 	return hex.EncodeToString(inBytes)
 }
 
@@ -257,6 +261,13 @@ func processSend() error {
 	var session umailData.Session
 	var headers map[string]string
 	var message string
+	var messageBuffer bytes.Buffer
+	var boundary string
+	var tpl *template.Template
+
+	if tpl, err = template.New("email").Parse(emailTemplate); err != nil {
+		return fmt.Errorf(`unexpected error while generating the email body: %s`, err)
+	}
 
 	// Parse the command line.
 	flag.StringVar(&smtpServerAddress, "smtp", DefaultSmtpServerAddress, fmt.Sprintf("address of the SMTP server (default: %s)", DefaultSmtpServerAddress))
@@ -306,13 +317,17 @@ func processSend() error {
 	}
 
 	// Send the email.
+	boundary = boundaryAsString(session.Boundaries[session.EmailIndex])
 	headers = map[string]string{
 		"From":         from,
 		"To":           to,
 		"Subject":      subject,
-		"Content-Type": fmt.Sprintf(`multipart/alternative;  boundary="%s"`, session.Boundaries[session.EmailIndex]),
+		"Content-Type": fmt.Sprintf(`multipart/alternative;  boundary="%s"`, boundary),
 	}
-	message = buildMessage(headers, string(body))
+	if err = tpl.Execute(&messageBuffer, emailContent{Boundary: boundary, Message: string(body)}); err != nil {
+		return fmt.Errorf(`unexpected error while generating the email body: %s`, err)
+	}
+	message = buildMessage(headers, messageBuffer.String())
 
 	if err = smtpClient.Mail(from); err != nil {
 		return fmt.Errorf(`error while sending "MAIL FROM:%s<CRLF>" command: %s`, from, err.Error())
@@ -338,7 +353,7 @@ func processSend() error {
 		return fmt.Errorf(`cannot update session "%s" (path: %s): %s`, sessionName, sessionPath, err.Error())
 	}
 
-	fmt.Printf("Number of emails sent: %d (onver %s)\n", session.EmailIndex, len(session.Boundaries))
+	fmt.Printf("Number of emails sent: %d (onver %d)\n", session.EmailIndex, len(session.Boundaries))
 	if session.EmailIndex >= len(session.Boundaries) {
 		fmt.Printf("The session has been entirely processes.\n")
 	}
@@ -351,6 +366,13 @@ func processSessionInfo() error {
 	var sessionName string
 	var sessionPath string
 	var session umailData.Session
+	var b2l = func(b []uint8) string {
+		var result []string
+		for _, v := range b {
+			result = append(result, fmt.Sprintf("%d", v))
+		}
+		return strings.Join(result, ", ")
+	}
 
 	if len(os.Args) != 2 {
 		return fmt.Errorf(`invalid number of arguments (%d instead of 1)`, len(os.Args))
@@ -365,11 +387,12 @@ func processSessionInfo() error {
 	fmt.Printf("email sent: %d\n", session.EmailIndex)
 	fmt.Printf("boundaries (%d):\n", len(session.Boundaries))
 	for i := 0; i < len(session.Boundaries); i++ {
-		fmt.Printf("[%3d] \"%s\"\n", i, byte2boundary(session.Boundaries[i]))
+		fmt.Printf("[%3d]  [%s] (ken: %d)\n", i, b2l(session.Boundaries[i]), len(session.Boundaries[i]))
+		fmt.Printf("       => \"%s\"\n", boundaryAsString(session.Boundaries[i]))
+
 	}
 	fmt.Printf("number of emails to send: %d\n", len(session.Boundaries)-session.EmailIndex)
 	return nil
-
 }
 
 func procesSessionReset() error {
@@ -440,9 +463,11 @@ func processGetMessage() error {
 	var password string
 	var imapServerAddress string
 	var imapServerPort int
+	var from string
+	var full bool
+	var showMailboxes bool
 	var imapClient *imapclient.Client
 	var imapUri string
-	var mailboxes []*imap.ListData
 	var selectedMbox *imap.SelectData
 
 	// Parse the command line.
@@ -450,6 +475,9 @@ func processGetMessage() error {
 	flag.IntVar(&imapServerPort, "port", DefaultImapServerPort, fmt.Sprintf("SMTP server port number (default: %d)", DefaultImapServerPort))
 	flag.StringVar(&user, "user", "", fmt.Sprintf("imap user"))
 	flag.StringVar(&password, "password", "", "sender password used for authentication")
+	flag.StringVar(&from, "from", "", "sender email address")
+	flag.BoolVar(&full, "full", false, "print all the email (not only the envelope)")
+	flag.BoolVar(&showMailboxes, "show-mailboxes", false, "list the mailboxes")
 	flag.Parse()
 
 	imapUri = fmt.Sprintf("%s:%d", imapServerAddress, imapServerPort)
@@ -460,19 +488,29 @@ func processGetMessage() error {
 	if err = imapClient.Login(user, password).Wait(); nil != err {
 		return fmt.Errorf("annot authenticate as \"%s\" (password: %s): %s", user, password, err.Error())
 	}
-	if mailboxes, err = imapClient.List("", "%", nil).Collect(); nil != err {
-		return fmt.Errorf("cannot get the list of mailboxes: %s", err.Error())
+
+	if showMailboxes {
+		var mailboxes []*imap.ListData
+
+		fmt.Printf("MAILBOXES:\n\n")
+		if mailboxes, err = imapClient.List("", "%", nil).Collect(); nil != err {
+			return fmt.Errorf("cannot get the list of mailboxes: %s", err.Error())
+		}
+		for _, mbox := range mailboxes {
+			fmt.Printf("  [%s]\n", mbox.Mailbox)
+		}
+		fmt.Printf("\n")
 	}
-	for _, mbox := range mailboxes {
-		fmt.Printf("mailbox: [%s]\n", mbox.Mailbox)
-	}
+
 	if selectedMbox, err = imapClient.Select("INBOX", nil).Wait(); err != nil {
 		fmt.Printf("Cannot select mailbox \"INBOX\": %s", err.Error())
 	}
 
+	fmt.Printf("EMAILS:\n\n")
 	var i uint32
-	//re := regexp.MustCompile(`Test Boundaries$`)
 	for i = 1; i <= selectedMbox.NumMessages; i++ {
+		var addresses []string
+		var ccs []string
 		var seqSet imap.SeqSet
 		var messages []*imapclient.FetchMessageBuffer
 		var fetchOptions *imap.FetchOptions
@@ -480,15 +518,34 @@ func processGetMessage() error {
 
 		seqSet = imap.SeqSetNum(i)
 
-		// Get the subject only.
+		// Get the envelope only (subject, from, to...).
 		fetchOptions = &imap.FetchOptions{Envelope: true}
 		if messages, err = imapClient.Fetch(seqSet, fetchOptions).Collect(); nil != err {
 			return fmt.Errorf("cannot fetch messages from \"INBOX\": %s", err.Error())
 		}
-		fmt.Printf("[Subject] %s\n", messages[0].Envelope.Subject)
-		//if !re.Match([]byte(messages[0].Envelope.Subject)) {
-		//	continue
-		//}
+
+		if from != "" && from != messages[0].Envelope.From[0].Addr() {
+			continue
+		}
+		for _, a := range messages[0].Envelope.Cc {
+			ccs = append(ccs, a.Addr())
+		}
+		for _, a := range messages[0].Envelope.To {
+			addresses = append(addresses, a.Addr())
+		}
+
+		fmt.Printf("[%04d] [%s]\n", i, messages[0].Envelope.Date.String())
+		fmt.Printf("Subject: %s\n", messages[0].Envelope.Subject)
+		fmt.Printf("From: %s\n", messages[0].Envelope.From[0].Addr())
+		fmt.Printf("To: %s\n", strings.Join(addresses, ", "))
+		if len(ccs) > 0 {
+			fmt.Printf("Cc: %s\n", strings.Join(ccs, ", "))
+		}
+		fmt.Printf("\n")
+
+		if !full {
+			continue
+		}
 
 		// Get all the data.
 
@@ -507,14 +564,13 @@ func processGetMessage() error {
 		}
 		for j, message := range messages {
 			fmt.Printf("===========================================\n")
-			fmt.Printf("%04d [%0d] UID:%05d: %s\n", i, j, message.UID, message.Envelope.Subject)
+			fmt.Printf("%04d [%0d] UID:%05d\n", i, j, message.UID)
 			fmt.Printf("   Flags: %v\n", message.Flags)
 
 			for data, buf := range message.BodySection {
 				if data.Specifier == "" {
 					continue
 				}
-				//fmt.Printf("[%s] <===> %s\n\n", data.Specifier, string(buf))
 				if "HEADER" == data.Specifier {
 					email.Header = string(buf)
 				}
@@ -523,7 +579,6 @@ func processGetMessage() error {
 				}
 			}
 			emailText := fmt.Sprintf("%s\r\n\r\n%s", email.Header, email.Body)
-			//fmt.Printf("==> %s\n\n", emailText)
 			r := strings.NewReader(emailText)
 			m, err := mail.ReadMessage(r)
 			if err != nil {
@@ -540,7 +595,9 @@ func processGetMessage() error {
 				return fmt.Errorf("%s", err)
 			}
 			fmt.Printf("%s", body)
+			fmt.Printf("===========================================\n")
 		}
+		fmt.Printf("\n")
 	}
 
 	if err := imapClient.Logout().Wait(); nil != err {

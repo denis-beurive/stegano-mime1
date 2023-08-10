@@ -1,6 +1,10 @@
 .idea
 send.bat
 rcv.bat
-body.txt
+body1.txt
+body2.txt
+body3.txt
 umail.exe
 res
+message.txt
+*.bin

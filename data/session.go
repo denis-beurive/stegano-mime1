@@ -48,6 +48,7 @@ func (s *Session) Reset(path string) error {
 	if err = s.Load(path); err != nil {
 		return err
 	}
+	s.EmailIndex = 0
 	return s.Save(path)
 }
 
