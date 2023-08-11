@@ -457,6 +457,7 @@ func processPoolInfo() error {
 	return nil
 }
 
+// retrieveMessage Retrieves an email identified by its sequence number.
 func retrieveMessage(imapClient *imapclient.Client, seqSet imap.SeqSet) (*string, error) {
 	var err error
 	var fetchOptions *imap.FetchOptions
