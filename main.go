@@ -457,6 +457,71 @@ func processPoolInfo() error {
 	return nil
 }
 
+func retrieveMessage(imapClient *imapclient.Client, seqSet imap.SeqSet) (*string, error) {
+	var err error
+	var fetchOptions *imap.FetchOptions
+	var messages []*imapclient.FetchMessageBuffer
+	var email = Email{Body: "", Header: ""}
+	var content []string
+	var result string
+
+	fetchOptions = &imap.FetchOptions{
+		Flags:    true,
+		Envelope: true,
+		UID:      true,
+		BodySection: []*imap.FetchItemBodySection{
+			{Specifier: imap.PartSpecifierHeader},
+			{Specifier: imap.PartSpecifierText},
+			{Specifier: imap.PartSpecifierNone},
+		},
+	}
+	if messages, err = imapClient.Fetch(seqSet, fetchOptions).Collect(); nil != err {
+		return nil, err
+	}
+
+	for i, message := range messages {
+		var m *mail.Message
+		var r io.Reader
+		var header mail.Header
+		var body []byte
+
+		content = append(content, fmt.Sprintf("       [%0d] UID:%05d", i, message.UID))
+		content = append(content, []string{fmt.Sprintf("           Flags: %v", message.Flags), ""}...)
+
+		for data, buf := range message.BodySection {
+			if data.Specifier == "" {
+				continue
+			}
+			if "HEADER" == data.Specifier {
+				email.Header = string(buf)
+			}
+			if "TEXT" == data.Specifier {
+				email.Body = string(buf)
+			}
+		}
+		emailText := fmt.Sprintf("%s\r\n\r\n%s", email.Header, email.Body)
+		r = strings.NewReader(emailText)
+		m, err = mail.ReadMessage(r)
+		if err != nil {
+			return nil, err
+		}
+
+		header = m.Header
+		for k, v := range header {
+			content = append(content, fmt.Sprintf("%s: %s", k, v))
+		}
+
+		body, err = io.ReadAll(m.Body)
+		if err != nil {
+			return nil, err
+		}
+		content = append(content, string(body))
+	}
+
+	result = strings.Join(content, "\r\n")
+	return &result, nil
+}
+
 func processGetMessage() error {
 	var err error
 	var user string
@@ -507,6 +572,7 @@ func processGetMessage() error {
 	}
 
 	fmt.Printf("EMAILS:\n\n")
+
 	var i uint32
 	for i = 1; i <= selectedMbox.NumMessages; i++ {
 		var addresses []string
@@ -514,7 +580,7 @@ func processGetMessage() error {
 		var seqSet imap.SeqSet
 		var messages []*imapclient.FetchMessageBuffer
 		var fetchOptions *imap.FetchOptions
-		var email = Email{Body: "", Header: ""}
+		var content *string
 
 		seqSet = imap.SeqSetNum(i)
 
@@ -534,70 +600,21 @@ func processGetMessage() error {
 			addresses = append(addresses, a.Addr())
 		}
 
-		fmt.Printf("[%04d] [%s]\n", i, messages[0].Envelope.Date.String())
-		fmt.Printf("Subject: %s\n", messages[0].Envelope.Subject)
-		fmt.Printf("From: %s\n", messages[0].Envelope.From[0].Addr())
-		fmt.Printf("To: %s\n", strings.Join(addresses, ", "))
+		fmt.Printf("[%04d] [seq:%d] [date:%s]\n", i, seqSet, messages[0].Envelope.Date.String())
+		fmt.Printf("       Subject: %s\n", messages[0].Envelope.Subject)
+		fmt.Printf("       From: %s\n", messages[0].Envelope.From[0].Addr())
+		fmt.Printf("       To: %s\n", strings.Join(addresses, ", "))
 		if len(ccs) > 0 {
-			fmt.Printf("Cc: %s\n", strings.Join(ccs, ", "))
+			fmt.Printf("       Cc: %s\n", strings.Join(ccs, ", "))
 		}
 		fmt.Printf("\n")
 
-		if !full {
-			continue
-		}
-
-		// Get all the data.
-
-		fetchOptions = &imap.FetchOptions{
-			Flags:    true,
-			Envelope: true,
-			UID:      true,
-			BodySection: []*imap.FetchItemBodySection{
-				{Specifier: imap.PartSpecifierHeader},
-				{Specifier: imap.PartSpecifierText},
-				{Specifier: imap.PartSpecifierNone},
-			},
-		}
-		if messages, err = imapClient.Fetch(seqSet, fetchOptions).Collect(); nil != err {
-			return fmt.Errorf("cannot fetch messages from \"INBOX\": %s", err.Error())
-		}
-		for j, message := range messages {
-			fmt.Printf("===========================================\n")
-			fmt.Printf("%04d [%0d] UID:%05d\n", i, j, message.UID)
-			fmt.Printf("   Flags: %v\n", message.Flags)
-
-			for data, buf := range message.BodySection {
-				if data.Specifier == "" {
-					continue
-				}
-				if "HEADER" == data.Specifier {
-					email.Header = string(buf)
-				}
-				if "TEXT" == data.Specifier {
-					email.Body = string(buf)
-				}
+		if full {
+			if content, err = retrieveMessage(imapClient, seqSet); err != nil {
+				return err
 			}
-			emailText := fmt.Sprintf("%s\r\n\r\n%s", email.Header, email.Body)
-			r := strings.NewReader(emailText)
-			m, err := mail.ReadMessage(r)
-			if err != nil {
-				return fmt.Errorf(`%s`, err)
-			}
-
-			header := m.Header
-			for k, v := range header {
-				fmt.Printf("%s: %s\n", k, v)
-			}
-
-			body, err := io.ReadAll(m.Body)
-			if err != nil {
-				return fmt.Errorf("%s", err)
-			}
-			fmt.Printf("%s", body)
-			fmt.Printf("===========================================\n")
+			fmt.Printf("%s\n\n", *content)
 		}
-		fmt.Printf("\n")
 	}
 
 	if err := imapClient.Logout().Wait(); nil != err {
