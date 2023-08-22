@@ -240,6 +240,19 @@ func buildMessage(headers map[string]string, body string) string {
 	return message
 }
 
+func createHtmlBody(body []byte) []byte {
+	var lines = strings.Split(string(body), "\n")
+	var htmlLines = []string{`<div style="font-family: Arial, sans-serif; font-size: 14px;">`}
+	var html string
+
+	for _, line := range lines {
+		htmlLines = append(htmlLines, "<p>"+line+"</p>")
+	}
+	htmlLines = append(htmlLines, "</div>")
+	html = strings.Join(htmlLines, "\n")
+	return []byte(html)
+}
+
 func processSend() error {
 	var err error
 	var keyName string
@@ -292,9 +305,7 @@ func processSend() error {
 	if body, err = os.ReadFile(bodyPath); err != nil {
 		return fmt.Errorf(`cannot load the email body from file "%s": %s`, bodyPath, err.Error())
 	}
-	htmlBody = append(htmlBody, []byte(`<div style="font-family: Arial, sans-serif; font-size: 14px;">`)...)
-	htmlBody = append(htmlBody, body...)
-	htmlBody = append(htmlBody, []byte(`</div>`)...)
+	htmlBody = createHtmlBody(body)
 	if err = session.Load(sessionPath); err != nil {
 		return fmt.Errorf(`cannot load the session (%s) data from file "%s": %s`, sessionName, sessionPath, err.Error())
 	}
