@@ -32,6 +32,7 @@ import (
 	"net/smtp"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"text/template"
@@ -84,6 +85,7 @@ const boundaryLength = 35
 var appDir string
 var sessionDir string
 var keyDir string
+var boundaryRegex = regexp.MustCompile(`boundary="(?P<boundary>[^"]+)"`)
 
 type ActionData struct {
 	Description string
@@ -457,14 +459,10 @@ func processPoolInfo() error {
 	return nil
 }
 
-// retrieveMessage Retrieves an email identified by its sequence number.
-func retrieveMessage(imapClient *imapclient.Client, seqSet imap.SeqSet) (*string, error) {
+func retrieveEmailMessages(imapClient *imapclient.Client, seqSet imap.SeqSet) ([]*imapclient.FetchMessageBuffer, error) {
 	var err error
 	var fetchOptions *imap.FetchOptions
 	var messages []*imapclient.FetchMessageBuffer
-	var email = Email{Body: "", Header: ""}
-	var content []string
-	var result string
 
 	fetchOptions = &imap.FetchOptions{
 		Flags:    true,
@@ -479,37 +477,88 @@ func retrieveMessage(imapClient *imapclient.Client, seqSet imap.SeqSet) (*string
 	if messages, err = imapClient.Fetch(seqSet, fetchOptions).Collect(); nil != err {
 		return nil, err
 	}
+	return messages, nil
+}
+
+// parseMessage Parse a given message and return a data structure that represents the message: header and body.
+func parseMessage(message *imapclient.FetchMessageBuffer) (*mail.Message, error) {
+	var err error
+	var email = Email{Body: "", Header: ""}
+	var m *mail.Message
+	var r io.Reader
+	var emailText string
+
+	for data, buf := range message.BodySection {
+		if "HEADER" == data.Specifier {
+			email.Header = string(buf)
+		}
+		if "TEXT" == data.Specifier {
+			email.Body = string(buf)
+		}
+	}
+	emailText = fmt.Sprintf("%s\r\n\r\n%s", email.Header, email.Body)
+	r = strings.NewReader(emailText)
+	m, err = mail.ReadMessage(r)
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func retrieveBoundary(message *imapclient.FetchMessageBuffer) (*string, error) {
+	var err error
+	var m *mail.Message
+	var header mail.Header
+	var ok bool
+	var contentType []string
+	var matches []string
+
+	if m, err = parseMessage(message); err != nil {
+		return nil, err
+	}
+	header = m.Header
+	if contentType, ok = header["Content-Type"]; !ok {
+		return nil, nil
+	}
+	if len(contentType) == 0 {
+		return nil, nil
+	}
+	if len(contentType) > 1 {
+		return nil, fmt.Errorf(`unexpected "Content-Type" header value (more than one values)`)
+	}
+	matches = boundaryRegex.FindStringSubmatch(contentType[0])
+	if matches == nil {
+		return nil, nil
+	}
+	return &matches[boundaryRegex.SubexpIndex("boundary")], nil
+}
+
+// retrieveFullEmail Retrieves an email identified by its sequence number.
+func retrieveFullEmail(imapClient *imapclient.Client, seqSet imap.SeqSet) (*string, error) {
+	var err error
+	var messages []*imapclient.FetchMessageBuffer
+	var content []string
+	var result string
+
+	if messages, err = retrieveEmailMessages(imapClient, seqSet); nil != err {
+		return nil, err
+	}
 
 	for i, message := range messages {
 		var m *mail.Message
-		var r io.Reader
 		var header mail.Header
 		var body []byte
+
+		if m, err = parseMessage(message); err != nil {
+			return nil, err
+		}
 
 		content = append(content, fmt.Sprintf("       [%0d] UID:%05d", i, message.UID))
 		content = append(content, []string{fmt.Sprintf("           Flags: %v", message.Flags), ""}...)
 
-		for data, buf := range message.BodySection {
-			if data.Specifier == "" {
-				continue
-			}
-			if "HEADER" == data.Specifier {
-				email.Header = string(buf)
-			}
-			if "TEXT" == data.Specifier {
-				email.Body = string(buf)
-			}
-		}
-		emailText := fmt.Sprintf("%s\r\n\r\n%s", email.Header, email.Body)
-		r = strings.NewReader(emailText)
-		m, err = mail.ReadMessage(r)
-		if err != nil {
-			return nil, err
-		}
-
 		header = m.Header
 		for k, v := range header {
-			content = append(content, fmt.Sprintf("%s: %s", k, v))
+			content = append(content, fmt.Sprintf("* %s: %s", k, v))
 		}
 
 		body, err = io.ReadAll(m.Body)
@@ -523,7 +572,7 @@ func retrieveMessage(imapClient *imapclient.Client, seqSet imap.SeqSet) (*string
 	return &result, nil
 }
 
-func processGetMessage() error {
+func processGetFullEmails() error {
 	var err error
 	var user string
 	var password string
@@ -582,11 +631,21 @@ func processGetMessage() error {
 		var messages []*imapclient.FetchMessageBuffer
 		var fetchOptions *imap.FetchOptions
 		var content *string
+		var boundary *string
 
 		seqSet = imap.SeqSetNum(i)
 
 		// Get the envelope only (subject, from, to...).
-		fetchOptions = &imap.FetchOptions{Envelope: true}
+		fetchOptions = &imap.FetchOptions{
+			Flags:    true,
+			Envelope: true,
+			UID:      true,
+			BodySection: []*imap.FetchItemBodySection{
+				{Specifier: imap.PartSpecifierHeader},
+				{Specifier: imap.PartSpecifierText},
+				{Specifier: imap.PartSpecifierNone},
+			},
+		}
 		if messages, err = imapClient.Fetch(seqSet, fetchOptions).Collect(); nil != err {
 			return fmt.Errorf("cannot fetch messages from \"INBOX\": %s", err.Error())
 		}
@@ -608,10 +667,19 @@ func processGetMessage() error {
 		if len(ccs) > 0 {
 			fmt.Printf("       Cc: %s\n", strings.Join(ccs, ", "))
 		}
+		if boundary, err = retrieveBoundary(messages[0]); err != nil {
+			return err
+		}
+		if boundary != nil {
+			fmt.Printf("       Boundary: %s\n", *boundary)
+		} else {
+			fmt.Printf("       Boundary:\n")
+		}
+
 		fmt.Printf("\n")
 
 		if full {
-			if content, err = retrieveMessage(imapClient, seqSet); err != nil {
+			if content, err = retrieveFullEmail(imapClient, seqSet); err != nil {
 				return err
 			}
 			fmt.Printf("%s\n\n", *content)
@@ -633,7 +701,7 @@ var Actions = map[string]ActionData{
 	"reset-key":      {Description: `rester the pool's pointer position'`, Handler: processPoolReset},
 	"info-key":       {Description: `print information about an "encryption/decryption" key`, Handler: processPoolInfo},
 	"send":           {Description: `send a message`, Handler: processSend},
-	"rcv":            {Description: `retrieve emails`, Handler: processGetMessage},
+	"rcv":            {Description: `retrieve emails`, Handler: processGetFullEmails},
 }
 
 func main() {
