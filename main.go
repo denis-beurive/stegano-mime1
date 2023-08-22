@@ -19,6 +19,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/tls"
 	b64 "encoding/base64"
@@ -35,6 +36,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -85,6 +87,7 @@ var appDir string
 var sessionDir string
 var keyDir string
 var boundaryRegex = regexp.MustCompile(`boundary="(?P<boundary>[^"]+)"`)
+var trimmerRegex = regexp.MustCompile(`\s+`)
 
 type ActionData struct {
 	Description string
@@ -95,6 +98,8 @@ type Email struct {
 	Header string
 	Body   string
 }
+
+type emailIndex = uint32
 
 func logError(messages []string) {
 	for _, message := range messages {
@@ -585,6 +590,40 @@ func retrieveFullEmail(messages []*imapclient.FetchMessageBuffer) (*string, erro
 	return &result, nil
 }
 
+func getEmails(indexBoundary map[emailIndex]string) ([]emailIndex, error) {
+	var err error
+	var response string
+	var emailsText []string
+	var emails []emailIndex
+	var reader = bufio.NewReader(os.Stdin)
+
+	fmt.Printf("List of emails to process (type 'x' to quit):\n")
+	response, err = reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	response = strings.ToLower(response)
+	response = strings.TrimSpace(response)
+	response = trimmerRegex.ReplaceAllString(response, " ")
+	if response == "x" {
+		return nil, nil
+	}
+	emailsText = strings.Split(response, " ")
+
+	for _, v := range emailsText {
+		index, err := strconv.ParseUint(v, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf(`invalid email index (%s). It should be an integer`, v)
+		}
+		_, ok := indexBoundary[uint32(index)]
+		if !ok {
+			return nil, fmt.Errorf(`unexpecter email index (%d)`, index)
+		}
+		emails = append(emails, uint32(index))
+	}
+	return emails, nil
+}
+
 func processGetFullEmails() error {
 	var err error
 	var user string
@@ -597,6 +636,8 @@ func processGetFullEmails() error {
 	var imapClient *imapclient.Client
 	var imapUri string
 	var selectedMbox *imap.SelectData
+	var indexBoundary = map[emailIndex]string{}
+	var emails []emailIndex
 
 	// Parse the command line.
 	flag.StringVar(&imapServerAddress, "imap", DefaultImapServerAddress, fmt.Sprintf("address of the IMAP server (default: %s)", DefaultImapServerAddress))
@@ -642,27 +683,14 @@ func processGetFullEmails() error {
 		var ccs []string
 		var seqSet imap.SeqSet
 		var messages []*imapclient.FetchMessageBuffer
-		var fetchOptions *imap.FetchOptions
 		var content *string
 		var boundary *string
 
 		seqSet = imap.SeqSetNum(i)
 
-		// Get the envelope only (subject, from, to...).
-		fetchOptions = &imap.FetchOptions{
-			Flags:    true,
-			Envelope: true,
-			UID:      true,
-			BodySection: []*imap.FetchItemBodySection{
-				{Specifier: imap.PartSpecifierHeader},
-				{Specifier: imap.PartSpecifierText},
-				{Specifier: imap.PartSpecifierNone},
-			},
-		}
-		if messages, err = imapClient.Fetch(seqSet, fetchOptions).Collect(); nil != err {
+		if messages, err = retrieveEmailMessages(imapClient, seqSet); err != nil {
 			return fmt.Errorf("cannot fetch messages from \"INBOX\": %s", err.Error())
 		}
-
 		if from != "" && from != messages[0].Envelope.From[0].Addr() {
 			continue
 		}
@@ -673,23 +701,24 @@ func processGetFullEmails() error {
 			addresses = append(addresses, a.Addr())
 		}
 
-		fmt.Printf("[%04d] [seq:%d] [date:%s]\n", i, seqSet, messages[0].Envelope.Date.String())
-		fmt.Printf("       Subject: %s\n", messages[0].Envelope.Subject)
-		fmt.Printf("       From: %s\n", messages[0].Envelope.From[0].Addr())
-		fmt.Printf("       To: %s\n", strings.Join(addresses, ", "))
-		if len(ccs) > 0 {
-			fmt.Printf("       Cc: %s\n", strings.Join(ccs, ", "))
-		}
 		if boundary, err = retrieveBoundary(messages[0]); err != nil {
 			return err
 		}
 		if boundary != nil {
-			fmt.Printf("       Boundary: %s\n", *boundary)
-		} else {
-			fmt.Printf("       Boundary:\n")
-		}
+			indexBoundary[i] = *boundary
 
-		fmt.Printf("\n")
+			fmt.Printf("[%4d] %s (%d)\n", i, messages[0].Envelope.Date.String(), messages[0].Envelope.Date.Unix())
+			fmt.Printf("       Subject: %s\n", messages[0].Envelope.Subject)
+			fmt.Printf("       From: %s\n", messages[0].Envelope.From[0].Addr())
+			fmt.Printf("       To: %s\n", strings.Join(addresses, ", "))
+			if len(ccs) > 0 {
+				fmt.Printf("       Cc: %s\n", strings.Join(ccs, ", "))
+			}
+			fmt.Printf("       Boundary: %s\n", *boundary)
+			fmt.Printf("\n")
+		} else {
+			continue
+		}
 
 		if full {
 			if content, err = retrieveFullEmail(messages); err != nil {
@@ -702,6 +731,19 @@ func processGetFullEmails() error {
 	if err := imapClient.Logout().Wait(); nil != err {
 		return fmt.Errorf("cannot logout: %s", err.Error())
 	}
+
+	// Ask for the list of emails to process.
+	if emails, err = getEmails(indexBoundary); err != nil {
+		return err
+	}
+	if emails == nil {
+		return nil
+	}
+	sort.SliceStable(emails, func(i, j int) bool {
+		return emails[i] > emails[j]
+	})
+	fmt.Printf("==> %v\n", emails)
+
 	return nil
 }
 
