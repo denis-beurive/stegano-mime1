@@ -407,7 +407,7 @@ func processSessionInfo() error {
 	fmt.Printf("email sent: %d\n", session.EmailIndex)
 	fmt.Printf("boundaries (%d):\n", len(session.Boundaries))
 	for i := 0; i < len(session.Boundaries); i++ {
-		fmt.Printf("[%3d]  [%s] (ken: %d)\n", i, b2l(session.Boundaries[i]), len(session.Boundaries[i]))
+		fmt.Printf("[%3d]  [%s] (len: %d)\n", i, b2l(session.Boundaries[i]), len(session.Boundaries[i]))
 		fmt.Printf("       => \"%s\"\n", boundaryAsString(session.Boundaries[i]))
 
 	}
