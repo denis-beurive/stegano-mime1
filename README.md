@@ -70,7 +70,7 @@ You cannot detect it.
 You cannot read it!
 ```
 
-You can print information about the previously create session:
+You can print information about the previously created session:
 
 ```
 umail.exe info-session first-session
