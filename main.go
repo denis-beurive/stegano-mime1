@@ -21,6 +21,7 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
+	b64 "encoding/base64"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	"io"
 	"log"
+	"mime"
 	"net/mail"
 	"net/smtp"
 	"os"
@@ -56,26 +58,23 @@ const DefaultBodyFile = "body1.txt"
 
 const emailTemplate = `--{{.Boundary}}
 Content-Type: text/plain; charset="utf-8"
-Content-Transfer-Encoding: quoted-printable
-Content-Disposition: inline
+Content-Transfer-Encoding: base64
 
-{{.Message}}
+{{.MessageText}}
 
 --{{.Boundary}}
 Content-Type: text/html; charset="utf-8"
-Content-Transfer-Encoding: quoted-printable
-Content-Disposition: inline
+Content-Transfer-Encoding: base64
 
-<pre>
-{{.Message}}
-</pre>
+{{.MessageHtml}}
 
 --{{.Boundary}}--`
 
 // See https://pkg.go.dev/text/template
 type emailContent struct {
-	Boundary string
-	Message  string
+	Boundary    string
+	MessageText string
+	MessageHtml string
 }
 
 // boundaryLength The length, in bytes, of a boundary. Do not modify this value.
@@ -252,6 +251,7 @@ func processSend() error {
 	var subject string
 	var bodyPath string
 	var body []byte
+	var htmlBody []byte
 	var smtpServerAddress string
 	var smtpServerPort int
 	var auth smtp.Auth
@@ -285,13 +285,16 @@ func processSend() error {
 	sessionName = flag.Arg(0)
 	from = flag.Arg(1)
 	to = flag.Arg(2)
-	subject = flag.Arg(3)
+	subject = mime.QEncoding.Encode("utf-8", flag.Arg(3))
 
 	// Load all data from files.
 	sessionPath = filepath.Join(sessionDir, sessionName)
 	if body, err = os.ReadFile(bodyPath); err != nil {
 		return fmt.Errorf(`cannot load the email body from file "%s": %s`, bodyPath, err.Error())
 	}
+	htmlBody = append(htmlBody, []byte(`<div style="font-family: Arial, sans-serif; font-size: 14px;">`)...)
+	htmlBody = append(htmlBody, body...)
+	htmlBody = append(htmlBody, []byte(`</div>`)...)
 	if err = session.Load(sessionPath); err != nil {
 		return fmt.Errorf(`cannot load the session (%s) data from file "%s": %s`, sessionName, sessionPath, err.Error())
 	}
@@ -326,7 +329,11 @@ func processSend() error {
 		"Subject":      subject,
 		"Content-Type": fmt.Sprintf(`multipart/alternative;  boundary="%s"`, boundary),
 	}
-	if err = tpl.Execute(&messageBuffer, emailContent{Boundary: boundary, Message: string(body)}); err != nil {
+	if err = tpl.Execute(&messageBuffer,
+		emailContent{
+			Boundary:    boundary,
+			MessageText: b64.StdEncoding.EncodeToString(body),
+			MessageHtml: b64.StdEncoding.EncodeToString(htmlBody)}); err != nil {
 		return fmt.Errorf(`unexpected error while generating the email body: %s`, err)
 	}
 	message = buildMessage(headers, messageBuffer.String())
@@ -355,7 +362,7 @@ func processSend() error {
 		return fmt.Errorf(`cannot update session "%s" (path: %s): %s`, sessionName, sessionPath, err.Error())
 	}
 
-	fmt.Printf("Number of emails sent: %d (onver %d)\n", session.EmailIndex, len(session.Boundaries))
+	fmt.Printf("Number of emails sent: %d (over %d)\n", session.EmailIndex, len(session.Boundaries))
 	if session.EmailIndex >= len(session.Boundaries) {
 		fmt.Printf("The session has been entirely processes.\n")
 	}
@@ -534,15 +541,10 @@ func retrieveBoundary(message *imapclient.FetchMessageBuffer) (*string, error) {
 }
 
 // retrieveFullEmail Retrieves an email identified by its sequence number.
-func retrieveFullEmail(imapClient *imapclient.Client, seqSet imap.SeqSet) (*string, error) {
+func retrieveFullEmail(messages []*imapclient.FetchMessageBuffer) (*string, error) {
 	var err error
-	var messages []*imapclient.FetchMessageBuffer
 	var content []string
 	var result string
-
-	if messages, err = retrieveEmailMessages(imapClient, seqSet); nil != err {
-		return nil, err
-	}
 
 	for i, message := range messages {
 		var m *mail.Message
@@ -679,7 +681,7 @@ func processGetFullEmails() error {
 		fmt.Printf("\n")
 
 		if full {
-			if content, err = retrieveFullEmail(imapClient, seqSet); err != nil {
+			if content, err = retrieveFullEmail(messages); err != nil {
 				return err
 			}
 			fmt.Printf("%s\n\n", *content)
