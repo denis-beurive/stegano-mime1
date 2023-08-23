@@ -683,7 +683,7 @@ func showMessage(boundaries []string) (*string, error) {
 	var hiddenMessage []byte
 
 	// Load the pool.
-	if pool, err = getKey("Enter the name the pool to use:"); err != nil {
+	if pool, err = getKey("Enter the name of the key to use:"); err != nil {
 		return nil, err
 	}
 	defer pool.Close()
@@ -699,9 +699,6 @@ func showMessage(boundaries []string) (*string, error) {
 		if boundaryBytes, err = hex.DecodeString(boundary); err != nil {
 			return nil, fmt.Errorf(`invalid boundary (invalid email): does not represent a hexadecimal string`)
 		}
-
-		fmt.Printf("len(key):      %d\n", len((*key)[i]))
-		fmt.Printf("len(boundary): %d\n", len(boundaryBytes))
 		clearMessage = append(clearMessage, cypher((*key)[i], boundaryBytes)...)
 	}
 
