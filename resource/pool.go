@@ -111,17 +111,20 @@ func (p *Pool) GetBytes(count int64) (*[]byte, error) {
 	return &buffer, nil
 }
 
+// GetBytesAsChunks Extract a given number of chunks from the pool.
 func (p *Pool) GetBytesAsChunks(chunkCount int64, chunkLength int64) (*[][]byte, error) {
 	var err error
 	var buffer *[]byte
 	var result [][]byte
 
+	// Extract the required chunks.
 	if buffer, err = p.GetBytes(chunkCount * chunkLength); err != nil {
 		return nil, err
 	}
 	for i := int64(0); i < chunkCount; i++ {
 		result = append(result, (*buffer)[i*chunkLength:(i+1)*chunkLength])
 	}
+
 	return &result, nil
 }
 
