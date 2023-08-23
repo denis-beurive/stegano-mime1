@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	b64 "encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -624,6 +625,97 @@ func getEmails(indexBoundary map[emailIndex]string) ([]emailIndex, error) {
 	return emails, nil
 }
 
+func getYesNo(message string) (*bool, error) {
+	var err error
+	var response string
+	var reader = bufio.NewReader(os.Stdin)
+	var result bool
+
+	fmt.Print(message + " ")
+	for {
+		response, err = reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		response = strings.ToLower(response)
+		response = strings.TrimSpace(response)
+		if response != "y" && response != "n" {
+			fmt.Printf("Invalid response (%s). Valid response: \"y\" or \"n\"\n", response)
+			continue
+		}
+		break
+	}
+	result = response == "y"
+	return &result, nil
+}
+
+func getKey(message string) (*resource.Pool, error) {
+	var err error
+	var reader = bufio.NewReader(os.Stdin)
+	var pool *resource.Pool
+
+	fmt.Print(message + " ")
+	for {
+		var poolName string
+		var poolPath string
+
+		poolName, err = reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		poolName = strings.TrimSpace(poolName)
+		poolPath = filepath.Join(keyDir, poolName)
+		if pool, err = resource.PoolOpen(poolPath); err != nil {
+			fmt.Printf("Cannot open the key \"%s\" (path: %s): %s", poolName, poolPath, err.Error())
+			continue
+		}
+		break
+	}
+	return pool, nil
+}
+
+func showMessage(boundaries []string) (*string, error) {
+	var err error
+	var pool *resource.Pool
+	var key *[][]byte
+	var clearMessage []byte
+	var messageLength uint16
+	var hiddenMessage []byte
+
+	// Load the pool.
+	if pool, err = getKey("Enter the name the pool to use:"); err != nil {
+		return nil, err
+	}
+	defer pool.Close()
+
+	// Extract the required number of bytes from the pool.
+	if key, err = pool.GetBytesAsChunks(int64(len(boundaries)), boundaryLength); err != nil {
+		return nil, fmt.Errorf(`not enough bytes left into the key file (needed %d bytes)`, len(boundaries)*boundaryLength)
+	}
+
+	// Decrypt all boundaries.
+	for i, boundary := range boundaries {
+		var boundaryBytes []byte
+		if boundaryBytes, err = hex.DecodeString(boundary); err != nil {
+			return nil, fmt.Errorf(`invalid boundary (invalid email): does not represent a hexadecimal string`)
+		}
+
+		fmt.Printf("len(key):      %d\n", len((*key)[i]))
+		fmt.Printf("len(boundary): %d\n", len(boundaryBytes))
+		clearMessage = append(clearMessage, cypher((*key)[i], boundaryBytes)...)
+	}
+
+	// Please, keep in mind that the message starts with an `uint16` which represents the length of the message.
+	if err = binary.Read(bytes.NewReader(clearMessage), binary.LittleEndian, &messageLength); err != nil {
+		return nil, err
+	}
+	fmt.Printf("Lenght of the (hidden) message: %d\n", messageLength)
+
+	hiddenMessage = clearMessage[2 : 2+messageLength]
+	fmt.Printf("The hidden message is:\n\n%s\n\n", hiddenMessage)
+	return nil, nil
+}
+
 func processGetFullEmails() error {
 	var err error
 	var user string
@@ -637,7 +729,9 @@ func processGetFullEmails() error {
 	var imapUri string
 	var selectedMbox *imap.SelectData
 	var indexBoundary = map[emailIndex]string{}
+	var boundaries []string
 	var emails []emailIndex
+	var proceed *bool
 
 	// Parse the command line.
 	flag.StringVar(&imapServerAddress, "imap", DefaultImapServerAddress, fmt.Sprintf("address of the IMAP server (default: %s)", DefaultImapServerAddress))
@@ -740,9 +834,31 @@ func processGetFullEmails() error {
 		return nil
 	}
 	sort.SliceStable(emails, func(i, j int) bool {
-		return emails[i] > emails[j]
+		return emails[i] < emails[j]
 	})
-	fmt.Printf("==> %v\n", emails)
+	fmt.Printf("You selected: %s\n", strings.Join(func(p []emailIndex) []string {
+		var r []string
+		for _, v := range p {
+			r = append(r, fmt.Sprintf("%d", v))
+		}
+		return r
+	}(emails), ", "))
+
+	// Ask for confirmation.
+	if proceed, err = getYesNo("Proceed ? (y/n)"); err != nil {
+		return fmt.Errorf("unexpected error: %s", err)
+	}
+	if *proceed == false {
+		return nil
+	}
+
+	// Show the hidden message.
+	for _, emailIndex := range emails {
+		fmt.Printf("[%4d] %s\n", emailIndex, indexBoundary[emailIndex])
+		boundaries = append(boundaries, indexBoundary[emailIndex])
+	}
+
+	_, _ = showMessage(boundaries)
 
 	return nil
 }
